@@ -1,0 +1,265 @@
+package com.liquibase.config;
+
+import java.sql.Connection;
+import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
+import javax.sql.DataSource;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+
+import javax.annotation.PostConstruct;
+import liquibase.Liquibase;
+import liquibase.database.Database;
+import liquibase.database.DatabaseFactory;
+import liquibase.database.jvm.JdbcConnection;
+import liquibase.resource.ClassLoaderResourceAccessor;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+
+@Configuration
+public class MultiTenantLiquibaseConfig {
+
+    @Autowired
+    private Environment environment;
+
+    private static final Logger logger = LoggerFactory.getLogger(MultiTenantLiquibaseConfig.class);
+    private List<DataSource> executedDatabases = new ArrayList<>();
+    private final String rollbackTag = "before_migration"; 
+
+    @PostConstruct
+    public void runLiquibaseForAllTenants() {
+        Map<Object, Object> tenantDataSources = MasterService.updateTenants(environment);
+
+        for (Map.Entry<Object, Object> entry : tenantDataSources.entrySet()) {
+            String tenantId = entry.getKey().toString();
+            DataSource tenantDataSource = (DataSource) entry.getValue();
+
+            try (Connection connection = tenantDataSource.getConnection()) {
+                Database database = DatabaseFactory.getInstance()
+                        .findCorrectDatabaseImplementation(new JdbcConnection(connection));
+
+                Liquibase liquibase = new Liquibase("db/changelog/db.changelog-master.xml",
+                        new ClassLoaderResourceAccessor(), database);
+                liquibase.rollback(rollbackTag, "");
+                executedDatabases.add(tenantDataSource); // Store successfully executed DB
+                logger.info("Liquibase migration applied for tenant: {}", tenantId);
+
+            } catch (Exception e) {
+                logger.error("Liquibase migration failed for tenant: {}. Rolling back all databases...", tenantId);
+                rollbackAllDatabases();
+                break; // Stop execution for further databases
+            }
+        }
+    }
+
+    private void rollbackAllDatabases() {
+        for (DataSource dataSource : executedDatabases) {
+            try (Connection connection = dataSource.getConnection()) {
+                Database database = DatabaseFactory.getInstance()
+                        .findCorrectDatabaseImplementation(new JdbcConnection(connection));
+
+                Liquibase liquibase = new Liquibase("db/changelog/db.changelog-master.xml",
+                        new ClassLoaderResourceAccessor(), database);
+
+//                String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+                liquibase.rollback(rollbackTag, "");
+                logger.info("Rollback successful for database");
+
+            } catch (Exception e) {
+                logger.error("Rollback failed for database!", e);
+            }
+        }
+    }
+}
+
+
+
+--------------------------rollback---------------------
+
+package com.liquibase.config;
+import liquibase.Liquibase;
+import liquibase.database.Database;
+import liquibase.database.DatabaseFactory;
+import liquibase.database.jvm.JdbcConnection;
+import liquibase.resource.ClassLoaderResourceAccessor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+
+import javax.annotation.PostConstruct;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+@Configuration
+public class MultiTenantLiquibaseConfig {
+
+    @Autowired
+    private Environment environment;
+
+    @PostConstruct
+    public void runLiquibaseForAllTenants() {
+        Map<Object, Object> tenantDataSources = MasterService.updateTenants(environment);
+
+        List<Connection> connections = new ArrayList<>();
+        List<Database> databases = new ArrayList<>();
+
+        try {
+            // Step 1: Open connections & disable auto-commit
+            for (Map.Entry<Object, Object> entry : tenantDataSources.entrySet()) {
+                DataSource tenantDataSource = (DataSource) entry.getValue();
+                Connection connection = tenantDataSource.getConnection();
+                connection.setAutoCommit(false); // Disable auto-commit
+                
+                Database database = DatabaseFactory.getInstance()
+                        .findCorrectDatabaseImplementation(new JdbcConnection(connection));
+
+                connections.add(connection);
+                databases.add(database);
+            }
+
+            // Step 2: Apply Liquibase changes to all databases
+            for (Database database : databases) {
+                Liquibase liquibase = new Liquibase("db/changelog/db.changelog-master.xml",
+                        new ClassLoaderResourceAccessor(), database);
+                liquibase.update(""); // Run migration for each database
+            }
+
+            // Step 3: If all succeed, commit all changes
+            for (Connection connection : connections) {
+                connection.commit();
+            }
+            System.out.println("Liquibase migration applied successfully for all tenants!");
+
+        } catch (Exception e) {
+            // Step 4: If any failure, rollback all changes
+            System.err.println("Liquibase migration failed. Rolling back all databases.");
+            e.printStackTrace();
+
+            for (Connection connection : connections) {
+                try {
+                    connection.rollback(); // Rollback all databases
+                } catch (Exception rollbackEx) {
+                    System.err.println("Rollback failed for a database.");
+                    rollbackEx.printStackTrace();
+                }
+            }
+        } finally {
+            // Step 5: Close connections
+            for (Connection connection : connections) {
+                try {
+                    connection.close();
+                } catch (Exception closeEx) {
+                    System.err.println("Failed to close connection.");
+                    closeEx.printStackTrace();
+                }
+            }
+        }
+    }
+}
+
+
+---------------------------------------backup --------------------------------
+
+package com.liquibase.config;
+
+import liquibase.Liquibase;
+import liquibase.database.Database;
+import liquibase.database.DatabaseFactory;
+import liquibase.database.jvm.JdbcConnection;
+import liquibase.resource.ClassLoaderResourceAccessor;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+
+import javax.annotation.PostConstruct;
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+@Configuration
+public class MultiTenantLiquibaseConfig {
+
+	@Autowired
+	private Environment environment;
+
+	private static final Logger logger = LoggerFactory.getLogger(MultiTenantLiquibaseConfig.class);
+
+	@PostConstruct
+	public void runLiquibaseForAllTenants() {
+		Map<Object, Object> tenantDataSources = MasterService.updateTenants(environment);
+
+		List<Connection> connections = new ArrayList<>();
+		List<Database> databases = new ArrayList<>();
+
+		try {
+			logger.info("Starting Liquibase migration for {} tenants.", tenantDataSources.size());
+
+			// Step 1: Open connections & disable auto-commit
+			for (Map.Entry<Object, Object> entry : tenantDataSources.entrySet()) {
+				String tenantId = entry.getKey().toString();
+				DataSource tenantDataSource = (DataSource) entry.getValue();
+				Connection connection = tenantDataSource.getConnection();
+				connection.setAutoCommit(false); // Disable auto-commit
+
+				Database database = DatabaseFactory.getInstance()
+						.findCorrectDatabaseImplementation(new JdbcConnection(connection));
+
+				connections.add(connection);
+				databases.add(database);
+				logger.info("Connected to tenant: {}", tenantId);
+			}
+
+			// Step 2: Apply Liquibase changes to all databases
+			for (Database database : databases) {
+				Liquibase liquibase = new Liquibase("db/changelog/db.changelog-master.xml",
+						new ClassLoaderResourceAccessor(), database);
+				logger.info("Applying Liquibase migration for tenant: {}", database.getDefaultCatalogName());
+				liquibase.update("");// Run migration for each database
+				logger.info("Migration successful for tenant: {}", database.getDefaultCatalogName());
+			}
+
+			// Step 3: If all succeed, commit all changes
+			for (Connection connection : connections) {
+				connection.commit();
+			}
+			logger.info("Liquibase migration applied successfully for all tenants!");
+
+		} catch (Exception e) {
+			// Step 4: If any failure, rollback all changes
+			logger.error("Liquibase migration failed. Rolling back all databases.", e);
+			for (Connection connection : connections) {
+				try {
+					connection.rollback(); // Rollback all databases
+					logger.warn("Rollback successful for a database.");
+				} catch (Exception rollbackEx) {
+					logger.error("Rollback failed for a database.", rollbackEx);
+				}
+			}
+		} finally {
+			// Step 5: Close connections
+			for (Connection connection : connections) {
+				try {
+					connection.close();
+					logger.debug("Closed connection successfully.");
+				} catch (Exception closeEx) {
+					logger.error("Failed to close connection.", closeEx);
+				}
+			}
+		}
+	}
+}
+
+
